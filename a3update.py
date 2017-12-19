@@ -47,7 +47,8 @@ for key, value in mods.items():
         shutil.rmtree(path)
 
     # Keep trying until the download actually succeeded
-    while os.path.isdir(path) == False:
+    tries = 1
+    while os.path.isdir(path) == False or tries >= 10:
         print("");
         print("=========")
         print("Updating {}".format(key));
@@ -64,7 +65,12 @@ for key, value in mods.items():
         os.system("{} {}".format(steam_cmd, steam_cmd_params))
 
         # Sleep for a bit so that we can kill the script if needed
-        time.sleep(0.5)
+        time.sleep(5)
+
+        tries = tries + 1
+
+    if tries >= 10:
+        print("Updating {} failed!".format(key));
 
 print("")
 print("=========")
