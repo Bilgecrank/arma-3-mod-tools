@@ -48,6 +48,7 @@ for key, value in mods.items():
 
     # Keep trying until the download actually succeeded
     while os.path.isdir(path) == False:
+        print("");
         print("=========")
         print("Updating {}".format(key));
         print("=========")
