@@ -44,7 +44,7 @@ def log(msg):
 
 def call_steamcmd(params):
     os.system("{} {}".format(STEAM_CMD, params))
-    print("")
+    print("\n\n")
 
 
 def update_server():
@@ -56,9 +56,9 @@ def update_server():
     call_steamcmd(steam_cmd_params)
 
 
-def mod_needs_update(item_id, path):
+def mod_needs_update(mod_id, path):
     if os.path.isdir(path):
-        response = request.urlopen("{}/{}".format(WORKSHOP_CHANGELOG_URL, item_id)).read()
+        response = request.urlopen("{}/{}".format(WORKSHOP_CHANGELOG_URL, mod_id)).read()
         response = response.decode("utf-8")
         match = PATTERN.search(response)
 
@@ -72,30 +72,30 @@ def mod_needs_update(item_id, path):
 
 
 def update_mods():
-    for key, value in MODS.items():
-        path = "{}/{}".format(A3_WORKSHOP_DIR, value)
+    for mod_name, mod_id in MODS.items():
+        path = "{}/{}".format(A3_WORKSHOP_DIR, mod_id)
 
         # Check if mod needs to be updated
         if os.path.isdir(path):
 
-            if mod_needs_update(value, path):
+            if mod_needs_update(mod_id, path):
                 # Delete existing folder so that we can verify whether the
                 # download succeeded
                 shutil.rmtree(path)
             else:
-                print("No update required for \"{}\" ({})... SKIPPING".format(key, value))
+                print("No update required for \"{}\" ({})... SKIPPING".format(mod_name, mod_id))
                 continue
 
         # Keep trying until the download actually succeeded
         tries = 0
         while os.path.isdir(path) == False and tries < 10:
-            log("Updating {} ({})".format(key, tries + 1))
+            log("Updating \"{}\" ({}) | {}".format(mod_name, mod_id, tries + 1))
 
             steam_cmd_params  = " +login {} {}".format(STEAM_USER, STEAM_PASS)
             steam_cmd_params += " +force_install_dir {}".format(A3_SERVER_DIR)
             steam_cmd_params += " +workshop_download_item {} {} validate".format(
                 A3_WORKSHOP_ID,
-                value
+                mod_id
             )
             steam_cmd_params += " +quit"
 
@@ -107,7 +107,7 @@ def update_mods():
             tries = tries + 1
 
         if tries >= 10:
-            log("!! Updating {} failed after {} tries !!".format(key, tries))
+            log("!! Updating {} failed after {} tries !!".format(mod_name, tries))
 
 
 def lowercase_workshop_dir():
@@ -115,16 +115,16 @@ def lowercase_workshop_dir():
 
 
 def create_mod_symlinks():
-    for key, value in MODS.items():
-        link_path = "{}/{}".format(A3_MODS_DIR, key)
-        real_path = "{}/{}".format(A3_WORKSHOP_DIR, value)
+    for mod_name, mod_id in MODS.items():
+        link_path = "{}/{}".format(A3_MODS_DIR, mod_name)
+        real_path = "{}/{}".format(A3_WORKSHOP_DIR, mod_id)
 
         if os.path.isdir(real_path):
             if not os.path.islink(link_path):
                 os.symlink(real_path, link_path)
                 print("Creating symlink '{}'...".format(link_path))
         else:
-            print("Mod '{}' does not exist! ({})".format(key, real_path))
+            print("Mod '{}' does not exist! ({})".format(mod_name, real_path))
 #endregion
 
 log("Updating A3 server ({})".format(A3_SERVER_ID))
