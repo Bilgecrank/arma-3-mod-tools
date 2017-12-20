@@ -37,9 +37,9 @@ WORKSHOP_CHANGELOG_URL = "https://steamcommunity.com/sharedfiles/filedetails/cha
 
 #region Functions
 def log(msg):
-    print("=========")
+    print("{{0:=<{}}}".format(len(msg)).format(""))
     print(msg);
-    print("=========")
+    print("{{0:=<{}}}".format(len(msg)).format(""))
 
 
 def call_steamcmd(params):
