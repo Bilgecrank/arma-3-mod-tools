@@ -37,6 +37,7 @@ WORKSHOP_CHANGELOG_URL = "https://steamcommunity.com/sharedfiles/filedetails/cha
 
 #region Functions
 def log(msg):
+    print("")
     print("{{0:=<{}}}".format(len(msg)).format(""))
     print(msg);
     print("{{0:=<{}}}".format(len(msg)).format(""))
@@ -44,7 +45,7 @@ def log(msg):
 
 def call_steamcmd(params):
     os.system("{} {}".format(STEAM_CMD, params))
-    print("\n\n")
+    print("")
 
 
 def update_server():
