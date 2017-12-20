@@ -1,8 +1,12 @@
 #!/usr/bin/python3
 import os
 import os.path
+import re
 import shutil
 import time
+
+from datetime import datetime
+from urllib import request
 
 steam_cmd = "/home/steam/arma3/steam/steamcmd.sh"
 steam_user = ""
@@ -33,25 +37,45 @@ steam_cmd_params += " +app_update {} validate".format(a3_server_id)
 steam_cmd_params += " +quit"
 
 print("=========")
-print("Updating A3 server ({})".format(a3_server_id));
+print("Updating A3 server ({})".format(a3_server_id))
 print("=========")
 
 os.system("{} {}".format(steam_cmd, steam_cmd_params))
 
+time.sleep(5)
+
 # Update mods
+pattern = re.compile(r"workshopAnnouncement.*?<p id=\"(\d+)\">", re.DOTALL)
+workshop_changelog_url = "https://steamcommunity.com/sharedfiles/filedetails/changelog/{}"
+
 for key, value in mods.items():
+    updated_at = None
+
+    response = request.urlopen(workshop_changelog_url.format(value)).read()
+    response = response.decode("utf-8")
+    match = pattern.search(response)
+
+    if match:
+        updated_at = datetime.fromtimestamp(int(match.group(1)))
+
     path = "{}/steamapps/workshop/content/{}/{}".format(a3_server_dir, a3_workshop_id, value)
 
-    # Delete existing folder so that we can verify whether the download succeeded
+    # Check if mod needs to be updated
     if os.path.isdir(path):
-        shutil.rmtree(path)
+        created_at = datetime.fromtimestamp(os.path.getctime(path))
+
+        if updated_at != None and updated_at >= created_at:
+            # Delete existing folder so that we can verify whether the download succeeded
+            shutil.rmtree(path)
+        else:
+            continue
 
     # Keep trying until the download actually succeeded
-    tries = 1
+    tries = 0
     while os.path.isdir(path) == False and tries < 10:
-        print("");
+        print("")
         print("=========")
-        print("Updating {}".format(key));
+        print("Updating {} ({})".format(key, tries + 1))
         print("=========")
 
         steam_cmd_params  = " +login {} {}".format(steam_user, steam_pass)
@@ -70,7 +94,8 @@ for key, value in mods.items():
         tries = tries + 1
 
     if tries >= 10:
-        print("Updating {} failed!".format(key));
+        print("Updating {} failed!".format(key))
+
 
 print("")
 print("=========")
