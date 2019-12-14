@@ -4,6 +4,9 @@
 #
 # Copyright (c) 2017 Marcel de Vries
 #
+# Modified by Connor Gowans
+# https://github.com/EggyPapa
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
@@ -41,13 +44,17 @@ STEAM_USER = "USERNAME"
 # The appid of Arma 3's Dedicated server. You shouldn't need to change this.
 A3_SERVER_ID = "233780"
 # The location that arma3 dedicated server is installed.
-A3_SERVER_DIR = "/home/steam/steamcmd/arma3"
+A3_SERVER_DIR = "/home/steam/arma3"
 # The appid of Arma 3, this is used to get workshop content. You shouldn't need to change this.
 A3_WORKSHOP_ID = "107410"
 # The location for which workshop content will be installed, you shouldn't need to change this.
 A3_WORKSHOP_DIR = "{}/steamapps/workshop/content/{}".format(A3_SERVER_DIR, A3_WORKSHOP_ID)
 # The location the symlinked folders for the mods will be placed, this should be in or below the folder Arma 3 is installed.
-A3_MODS_DIR = "/home/steam/steamcmd/arma3"
+A3_MODS_DIR = "/home/steam/arma3"
+
+###
+### Mods are stored in mods.json
+###
 
 ## These ones only matter if you want to have a starting command pregenerated
 # The name you want the server to have
@@ -99,9 +106,12 @@ def update_server():
     call_steamcmd(steam_cmd_params)
 
 def get_mods_from_file():
+    # Pull mods from mods.json
     with open('mods.json', 'r') as handle:
+        # Strip comments.
         fixed_json = ''.join(line for line in handle if not line.startswith('//'))
         modsfile = json.loads(fixed_json, object_hook=empty_strings2none)
+    # Append to MODS_URL 
     MOD_URLS.update(modsfile)
 
 def mod_needs_update(mod_id, path):
