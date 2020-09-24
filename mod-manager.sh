@@ -359,9 +359,6 @@ def save_starting_params():
     # Write the launch param to a log to be stored for error checking.
     savefile("launchparam.log", starter, True)
 
-def quick_Install():
-    
-
 def main():
     log("Starting Mod-Manager")
     handle_username()
