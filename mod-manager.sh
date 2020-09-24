@@ -345,6 +345,9 @@ def savefile(filename, filestring, log_true):
         f = open( filename, 'w' )
         f.write(str(filestring))
         f.close()
+        
+def quick_Install():
+    print("I should probably finish this at some point")
 
 # Saves server starting param into launchparam.cfg, and logs server starting param into to launchparam.log.
 def save_starting_params():
