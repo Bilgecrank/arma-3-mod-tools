@@ -3,9 +3,8 @@
 # MIT License
 #
 # Copyright (c) 2017 Marcel de Vries
-#
-# Modified by EggyPapa
-# https://github.com/EggyPapa
+# Modified by EggyPapa - https://github.com/EggyPapa
+# Copyright (c) 2023 Bilgecrank
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -25,371 +24,402 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import os
-import os.path
-import re
-import json
-import six
-import sys
-import shutil
-import time
-import datetime as dt
+import re  # for sanitizing mod_names
+from pathlib import Path, PurePath  # for file-handling operations
+from datetime import datetime  # for comparing timestamps for mod updates
+import urllib.request  # for reaching Steam Workshop webpages
+import urllib.error  # for catching issues with urllib returning
+import threading  # to speed up requests for getting mod data
+import subprocess
 import argparse
-import tempfile
-
-from datetime import datetime
-from urllib import request
 from getpass import getpass
 
-# Parse parameters.
-parser = argparse.ArgumentParser(description='Downloads Mods from the Arma3 Steam Workshop. \n NOTE: The account you use, MUST own a copy of Arma3.')
-parser.add_argument('-p','--password', action='store', dest='password_param',help='Provide password.')
-parser.add_argument('-u','--username', action='store', dest='username_param',help='Provide username.')
-parser.add_argument('-f','--modlist', action='store', dest='modfile_name',help='Provide the name of a json modfile, or a list of modfiles with their names seperated by commas.')
-parser.add_argument('-w','--weblocation', action='store', dest='web_file_name',help='Provide the URL for a json modfile.')
-parser.add_argument('-d','--defer', action='store_true', dest='defer_upgrade_true',help='Defer server upgrade.')
-parser.add_argument('-q','--quick', action='store_true', dest='quick_install_true',help='Quickly install a single mod.')
-results = parser.parse_args()
+# Non-core modules
+import networkx as nx  # for sorting mod dependencies
+from bs4 import BeautifulSoup  # to scrape Steam Workshop webpages of information
 
-## Configuration information:
-# The location of your steamcmd install.
-STEAM_CMD = "/home/steam/steamcmd/steamcmd.sh"
-# Your steam username, for if you want to hardcode it.
-STEAM_USER = ""
-# Your steam account password, for if you want to hardcode it.
-STEAM_PASS = ""
-# The appid of Arma 3's Dedicated server. You shouldn't need to change this.
-A3_SERVER_ID = "233780"
-# The location that arma3 dedicated server is installed.
-A3_SERVER_DIR = "/home/steam/arma3"
-# The appid of Arma 3, this is used to get workshop content. You shouldn't need to change this.
-A3_WORKSHOP_ID = "107410"
-# The location for which workshop content will be installed, you shouldn't need to change this.
-A3_WORKSHOP_DIR = "{}/steamapps/workshop/content/{}".format(A3_SERVER_DIR, A3_WORKSHOP_ID)
-# The location the symlinked folders for the mods will be placed, this should be in or below the folder Arma 3 is installed.
-A3_MODS_DIR = "/home/steam/arma3"
-# The location for mod keys to be placed.
-A3_KEYS_DIR = "{}/keys".format(A3_SERVER_DIR)
+STEAM_CMD = 'steamcmd'  # SteamCMD reference, either the environment variable, or the path to the shell
+SERVER_ID = '233780'  # Steam ID for Arma 3's Server Software'
+WORKSHOP_ID = '107410'  # Workshop ID for Arma 3
+SERVER_DIR = PurePath('/home/steam/servers/arma3')
+WORKSHOP_DIR = SERVER_DIR / 'steamapps/workshop/content' / WORKSHOP_ID  # Directory where workshop items are placed
+MODS_DIR = SERVER_DIR / 'mods'  # Directory mods will be referenced from to the game
+KEYS_DIR = SERVER_DIR / 'keys'  # Key directory for mods.
+STARTUP_SCRIPT = SERVER_DIR / 'start-server.sh' # The script for starting the server.
 
-###
-### Mods are stored in mods.json
-###
+parser = argparse.ArgumentParser(
+    prog='arma3modtools',
+    description='Mod tools to install, update and maintain mods for Arma 3 on Linux.'
+)
+parser.add_argument('-f', '--html-file', action='store', dest='html_file',
+                    help='An Arma 3 Launcher-made html mod list.')
+arguments = parser.parse_args()
 
-## These ones only matter if you want to have a starting command pregenerated
-# The name you want the server to have
-server_name = "Arma 3 Server"
-# The name of your server.cfg file, I recommend leaving it as server.cfg but i'm not your Dad.
-server_cfg = "server.cfg"
 
-#
-###
-####
-#### Users don't need to look at anything below this.
-####
-###
-#
+def call_steamcmd(launch_params: str):
+    """
+    Call the steamcmd client and run parameters against the client call
 
-# These are the dictionaries that will be populated by the script.
-MOD_URLS = {}
-MODS = {}
+    :param launch_params: String list of parameters
+    :raises subprocess.CalledProcessError: If steamcmd ends unexpectedly.
+    :return: **bool** Whether or not steamcmd successfully runs
+    """
+    try:
+        with subprocess.Popen([f'{STEAM_CMD}', f'{launch_params}']) as steamcmd:
+            steamcmd.wait()
+        return True
+    except subprocess.CalledProcessError as error:
+        print(error)
+        return False
 
-PATTERN = re.compile(r"workshopAnnouncement.*?<p id=\"(\d+)\">", re.DOTALL)
-WORKSHOP_CHANGELOG_URL = "https://steamcommunity.com/sharedfiles/filedetails/changelog"
-mod_name_pattern = re.compile(r"(?:<title>Steam Workshop :: )(.+)(?:<.+>)")
-mod_id_pattern = re.compile(r"(?:\?id=)(.+)")
 
-class colour:
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    BOLD='\033[31m'
-    REG='\033[0;0m'
+def mod_list_from_html(import_file: str):
+    """
+    Defines a mod list of urls from a html import file generated from Arma 3's launcher
 
-def empty_strings2none(obj):
-    for k, v in six.iteritems(obj):
-        if v == '':
-            obj[k] = None
-    return obj
+    :param import_file: An html import file.
+    :return: **list** A list of all links in the mod-list. False, if operation fails.
+    """
+    try:
+        mod_link_list = []
+        with open(import_file, 'r') as html_file:
+            # Parse html file with beautiful soup and pull out all hrefs under a tags.
+            soup = BeautifulSoup(html_file, 'html.parser')
+            for link in soup.find_all('a'):
+                mod_link_list.append(link.get('href'))
+        return mod_link_list
+    except IOError as error:
+        print(error)
+        return False
 
-def log(msg, type = 0):
-    if type == 1:
-        style = colour.BOLD + "{{0:!<{}}}" + colour.REG
-    else:
-        style = "{{0:=<{}}}"
-    print("\n" + style.format(len(msg)).format(""))
-    print(msg)
-    print(style.format(len(msg)).format(""))
 
-def call_steamcmd(params):
-    os.system("{} {}".format(STEAM_CMD, params))
-    print("")
+def mod_data_getter(mod_url: str, mod_dict: dict):
+    """
+    Thread function for ```mod_dictionary_builder```, runs concurrently to grab up-to-date information for mods.
+    :param mod_url: The Steam Workshop url for the mod.
+    :param mod_dict: The dictionary being built from ```mod_dictionary_builder```, not a completed dictionary
+    """
+    try:
+        if mod_url is not None:
+            dependencies = []
+            # Refresh dependencies dictionary with each mod
 
-# Handle the password parameter.
-def handle_password():
-    global STEAM_PASS
-    if STEAM_PASS:
-        log("{GREEN}Using hardcoded password variable.{REG}")
-    elif results.password_param:
-        log("{GREEN}Using password from parameter.{REG}")
-        STEAM_PASS = results.password_param
-    else:
-        STEAM_PASS = getpass("Enter your account password: ")
-        if not STEAM_PASS:
-            catch_account_fail("You must either provide a password with the -p parameter, enter it during runtime or hardcode it.")   
+            with urllib.request.urlopen(mod_url) as response:
+                # Gather information about the mod from the steam workshop web page
+                html = response.read()
+                mod_soup = BeautifulSoup(html, 'html.parser')
+                mod_name = mod_soup.find("div", {"class": "workshopItemTitle"}).string
+                required_items = mod_soup.find(id="RequiredItems")
+                if required_items is not None:
+                    # Check to see if there are any dependencies for the mod.
+                    dependency_links = required_items.find_all('a')
+                    for link in dependency_links:
+                        depend_url = link.get('href')
+                        with urllib.request.urlopen(depend_url) as dependency:
+                            dependency_soup = BeautifulSoup(dependency, 'html.parser')
+                            depend_name = dependency_soup.find("div", {"class": "workshopItemTitle"}).string
+                            dependency = {
+                                'name': depend_name,
+                                'param_name': '@' + re.sub('[^0-9a-zA-Z]+', '', depend_name).lower(),
+                                'key': depend_url.replace(
+                                    'https://steamcommunity.com/workshop/filedetails/?id=', ''),
+                                'url': depend_url
+                            }
+                            dependencies.append(dependency)
+            mod_details = {
+                'name': mod_name,
+                'param_name': '@' + re.sub('[^0-9a-zA-Z]+', '', mod_name).lower(),
+                'key': mod_url.replace('https://steamcommunity.com/sharedfiles/filedetails/?id=', ''),
+                'url': mod_url,
+                'dependencies': dependencies
+            }
+            mod_dict[mod_url.replace('https://steamcommunity.com/sharedfiles/filedetails/?id=', '')] = mod_details
+    except (TimeoutError, urllib.error.URLError) as error:
+        print(error)
 
-# Handle the username parameter.
-def handle_username():
-    global STEAM_USER
-    if STEAM_USER:
-        log("Using hardcoded username variable.")
-    elif results.username_param:
-        log("Will login as " + results.username_param)
-        STEAM_USER = results.username_param
-    else:
-        STEAM_USER = input("Enter your account username: ")
-        if not STEAM_USER:
-            catch_account_fail("You must either provide a username with the -u parameter, enter it during runtime or hardcode it.")
 
-def catch_account_fail(reason):
-    log(colour.RED + reason + "\nTo download mods from the Arma3 workshop, you MUST use an account that owns Arma3." + colour.REG, 1)
-    sys.exit()
+def mod_dictionary_builder(mod_list: list):
+    """
+    Builds the mod dictionary from a list of url strings linking to steam workshop pages. Calls ```mod_data_getter``` in
+    separate strings to speed up the process.
 
-# Use this to catch bad variables to make crashes more readable.
-def catch_empty():
-    print('do this later')
+    :param mod_list: A list of url strings, point to steam workshop pages.
+    :return: **dict** All mods in the mod-list as dictionaries.
+    """
+    threads = []
+    mod_dict = {}
+    i = 1
+    print('REQUEST: Sending out requests for mod information.')
+    for mod_url in mod_list:
+        thread = threading.Thread(target=mod_data_getter, args=(mod_url, mod_dict))
+        thread.start()
+        threads.append(thread)
 
-def handle_upgrade():
-    if results.defer_upgrade_true:
-        log("Defering server upgrade.")
-    else:
-        ("Updating A3 server ({})".format(A3_SERVER_ID))
-        update_server()
+    for result in threads:
+        print(f'\rREQUEST: Returned {i}/{len(mod_list)} mods', end='', flush=True)
+        result.join()
+        i += 1
+    print('')
+    return mod_dict
 
-def update_server():
-    steam_cmd_params  = " +login {}".format(STEAM_USER, STEAM_PASS)
-    steam_cmd_params += " +force_install_dir {}".format(A3_SERVER_DIR)
-    steam_cmd_params += " +app_update {} validate".format(A3_SERVER_ID)
-    steam_cmd_params += " +quit"
 
-    call_steamcmd(steam_cmd_params)
+def needs_update(mod_key: str):
+    """
+    Checks a mod's changelist page on the Steam Workshop and pulls the last update time and compares it when the
+    mod's directory was created in the local workshop directory.
 
-def handle_modlist():
-    modlist = ""
-    if results.web_file_name:
-        # Opens the url provided and saves it as a temporary file, then appends the name of the temporary file to the mod string.
-        with request.urlopen(results.web_file_name) as response:
-            with tempfile.NamedTemporaryFile(delete=False) as modlist:
-                shutil.copyfileobj(response, modlist)
-                modlist = modlist.name + ","
-    if results.modfile_name:
-        modlist = modlist + results.modfile_name
-        print(modlist)
-        # Converts the modlist string to a list.
-        modlist = modlist.split(",")
-        # Strips leading or trailing spaces or returns, but leaves all others. 
-        # "  test " will become "test", " test file" will become "test file" etc.
-        modlist = list(map(lambda x : x.strip(), modlist))
-        print(modlist)
-        get_mods_from_file(modlist)
-    else:
-        modlist = "mods.json"
-        print(modlist)
-        get_mods_from_file(modlist)
-
-def get_mods_from_file(modlist):
-    for x in modlist:
+    :param mod_key: **str** The key of the mod to be checked.
+    :return: **bool** Whether or not the mod needs an update.
+    :raises TimeoutError: If the request for the changelist page times out.
+    :raises FileNotFoundError: If the directory does not exist.
+    :raises urllib.error.URLError: If a separate error through urllib happens as a result of the request.
+    """
+    mod_home_dir = Path(PurePath.joinpath(WORKSHOP_DIR, mod_key))
+    if mod_home_dir.is_dir():  # Check if mod is installed in the workshop directory.
         try:
-            with open(x, 'r') as handle:
-            # Strip comments.
-                fixed_json = ''.join(line for line in handle if not line.startswith('//'))
-                modsfile = json.loads(fixed_json, object_hook=empty_strings2none)
-                print(x)
-            # Append to MODS_URL 
-            MOD_URLS.update(modsfile)
-        except:
-            log('The file "{}" does not exist!'.format(x))
+            with urllib.request.urlopen(
+                    'https://steamcommunity.com/sharedfiles/filedetails/changelog/' + mod_key) as response:
+                html = response.read()
+                soup = BeautifulSoup(html, 'html.parser')
+                updated = datetime.fromtimestamp(int(
+                    soup.find("div", {"class": "detailBox workshopAnnouncement noFooter"}).p['id']))
+                downloaded = datetime.fromtimestamp(mod_home_dir.stat().st_ctime)
+                return updated >= downloaded
+        except (TimeoutError,
+                urllib.error.URLError,
+                FileNotFoundError) as error:
+            print(error)
+    return True
 
-# Check if a mod needs an update.
-def mod_needs_update(mod_id, path):
-    if os.path.isdir(path):
-        response = request.urlopen("{}/{}".format(WORKSHOP_CHANGELOG_URL, mod_id)).read()
-        response = response.decode("utf-8")
-        match = PATTERN.search(response)
 
-        if match:
-            updated_at = datetime.fromtimestamp(int(match.group(1)))
-            created_at = datetime.fromtimestamp(os.path.getctime(path))
+def get_login():
+    """
+    Get login information from user. Will only accept 'LOGIN PASSWORD' or 'LOGIN PASSWORD STEAM_GUARD' combinations.
 
-            return (updated_at >= created_at)
+    :return: **str** login string for SteamCMD login variable, false if the operation does not succeed.
+    """
+    print('LOGIN: Account should have a valid copy of the game to download mods.')
+    username = input('Username: ')
+    if not username:
+        print('LOGIN FAILURE: No username entry.')
+        return False
+    password = getpass('Password: ')
+    if not password:
+        print('LOGIN FAILURE: No password entry.')
+        return False
+    steam_guard = input('Steam Guard Code (Optional): ')
+    credentials = f'{username} {password}'
+    if steam_guard:
+        credentials += f' {steam_guard}'
+    return credentials
 
-    return False
 
-def get_mod_url_info():
-    for mod_url, mod_name_override in MOD_URLS.items():
-        # Set mod_id to the mod_id pulled from the mod_url
-        mod_id = mod_id_pattern.search(mod_url)
-        mod_id = mod_id.group(1)
-        # If there is no mod_name_override get mod name from mod_url
-        if mod_name_override is None:
-            response = request.urlopen(mod_url).read()
-            response = response.decode("utf-8")
-            mod_name = mod_name_pattern.search(response)
-            mod_name = mod_name.group(1)
-        # Otherwise, apply the mod name override
+def update_mods(mod_dict: dict):
+    """
+    Updates the mods in the mod list dictated by the mod dictionary. The mod list is checked for up to date mods
+    and then appends workshop_download_item commands to the end of the steamcmd string for each mod that needs
+    to be installed
+
+    :param mod_dict: The full mod dictionary.
+    :return: **bool** If procedure succeeds.
+    """
+    mods_to_update = []
+    mods_up_to_date = []
+    for key, value in mod_dict.items():
+        if needs_update(key):
+            mods_to_update.append(key)
         else:
-            mod_name = mod_name_override
-        # Clean mod names.
-        mod_name = mod_name.lower()
-        mod_name = re.sub('[^A-Za-z0-9]+', '_', mod_name)
-        mod_name = "@" + mod_name
-        print(mod_name)
-        # Append mods to list.
-        MODS.update({mod_name:mod_id})
-        print(MODS)
+            mods_up_to_date.append(key)
+    if len(mods_up_to_date) == len(mod_dict):
+        print('UPDATE: All mods are up-to-date.')
+        return True
+    elif mods_up_to_date:
+        print('UPDATE: The following mod(s) are up-to-date:')
+        for installed_mod in mods_up_to_date:
+            print(f'\t{mod_dict[installed_mod]["name"]}')
+    if mods_to_update:
+        print('UPDATE: Installing mods through SteamCMD.')
+        login_string = get_login()
+        if not login_string:
+            # If get_login() fails.
+            print('EXIT: User/pass needed for mod downloads.')
+            return False
+        steamcmd_params = f' +login {login_string}' \
+                          f' +force_install_dir {SERVER_DIR}'
+        for mod in mods_to_update:
+            steamcmd_params += f' +workshop_download_item {WORKSHOP_ID} {mod}'
+        steamcmd_params += ' +quit'
+        call_steamcmd(steamcmd_params)
+    print('UPDATE: Mod updates finished.')
+    print('UPDATE: Converting file and directory names to lowercase.')
+    if not lowercase_mods():
+        print('UPDATE: Could not successfully lowercase all/any mods.')
+        return False
+    return True
 
-def update_mods():
-    for mod_name, mod_id in MODS.items():
-        path = "{}/{}".format(A3_WORKSHOP_DIR, mod_id)
 
-        # Check if mod needs to be updated
-        if os.path.isdir(path):
+def create_mod_symlinks(mod_dict: dict):
+    """
+    Create symlinks from the ```WORKSHOP_DIR``` to the ```MODS_DIR```, also cleans any broken links in the folder.
 
-            if mod_needs_update(mod_id, path):
-                # Delete existing folder so that we can verify whether the
-                # download succeeded
-                shutil.rmtree(path)
+    :param mod_dict: **dict** The current mod list's dictionary
+    :return: **bool** Whether or not the function succeeds
+    """
+    print('MOD SYMLINKS: Checking if current mod links are valid.')
+    for mod in Path(MODS_DIR).iterdir():
+        if not mod.is_dir():
+            print(f'KEY SYMLINKS: Unlinking broken link: {mod}')
+            mod.unlink()
+    for key, value in mod_dict.items():
+        link_path = Path(MODS_DIR / value["param_name"])
+        real_path = Path(WORKSHOP_DIR / key)
+        if not link_path.is_dir():
+            if real_path.is_dir():
+                link_path.symlink_to(real_path)
+                print(f'MOD SYMLINKS: Creating symlink at: {link_path}')
             else:
-                print("No update required for \"{}\" ({})... SKIPPING".format(mod_name, mod_id))
-                continue
+                print(f'SYMLINK ERROR: {value["name"]} not found: {real_path}')
+    return True
 
-        # Keep trying until the download actually succeeded
-        tries = 0
-        while os.path.isdir(path) == False and tries < 10:
-            log("Updating \"{}\" ({}) | {}".format(mod_name, mod_id, tries + 1))
 
-            steam_cmd_params  = " +login {} {}".format(STEAM_USER, STEAM_PASS)
-            ## steam_cmd_params  = " +login {}".format(STEAM_USER)
-            steam_cmd_params += " +force_install_dir {}".format(A3_SERVER_DIR)
-            steam_cmd_params += " +workshop_download_item {} {} validate".format(
-                A3_WORKSHOP_ID,
-                mod_id
-            )
-            steam_cmd_params += " +quit"
+def create_key_symlinks():
+    """
+    Creates symlinks from the key files in the workshop directory to the key files in the ```KEYS_DIR```
 
-            call_steamcmd(steam_cmd_params)
-
-            # Sleep for a bit so that we can kill the script if needed
-            time.sleep(5)
-
-            tries = tries + 1
-
-        if tries >= 10:
-            log("!! Updating {} failed after {} tries !!".format(mod_name, tries))
-
-def lowercase_workshop_dir():
-    os.system("(cd {} && find . -depth -exec rename -v 's/(.*)\/([^\/]*)/$1\/\L$2/' {{}} \;)".format(A3_WORKSHOP_DIR))
-
-def create_mod_symlinks():
-    for mod_name, mod_id in MODS.items():
-        link_path = "{}/{}".format(A3_MODS_DIR, mod_name)
-        real_path = "{}/{}".format(A3_WORKSHOP_DIR, mod_id)
-
-        if os.path.isdir(real_path):
-            if not os.path.islink(link_path):
-                os.symlink(real_path, link_path)
-                print("Creating symlink '{}'...".format(link_path))
+    :return: **bool** Whether or not the operation finishes successfully.
+    """
+    print('KEY SYMLINKS: Checking if current keys are valid.')
+    for key in Path(KEYS_DIR).iterdir():
+        if not key.is_file():
+            print(f'KEY SYMLINKS: Unlinking broken key: {key}')
+            key.unlink()
+    for directory in Path(WORKSHOP_DIR).iterdir():
+        key_dir = directory / 'keys'
+        if key_dir.is_dir():
+            for file in key_dir.iterdir():
+                if file.suffix == '.bikey':
+                    symlink_key = Path(KEYS_DIR / file.name)
+                    if not symlink_key.is_file():
+                        print(f'KEY SYMLINKS: Creating symlink at: {symlink_key}')
+                        symlink_key.symlink_to(file)
         else:
-            print("Mod '{}' does not exist! ({})".format(mod_name, real_path))
+            print(f'No key directory found in {directory}')
+    return True
 
-## Creates symlinks to keys, heavily based off:
-## https://gist.github.com/Freddo3000/a5cd0494f649db75e43611122c9c3f15 by https://gist.github.com/Freddo3000
-def symlink_mod_keys():
-    mods_folders = os.listdir(A3_MODS_DIR)
-    print("\n Checking if current keys are valid.")
-    for key in os.listdir(A3_KEYS_DIR):
-        key_dir = "{}/{}".format(A3_KEYS_DIR, key)
-        if os.path.islink(key_dir) and not os.path.exists(key_dir):
-            print("Unlinking old key, {}".format(key))
-            os.unlink(key_dir)
-        else:
-            print("The key {} is valid.".format(key))
-    print("\n Creating key symlinks.")
-    for folder in mods_folders:
-        modname = folder
-        if "@" not in folder:
-            mods_folders.remove(folder)
-        else:
-            folder = "{}/{}/keys/".format(A3_MODS_DIR, folder)
-            if os.path.exists(folder):
-                key_folder_list = os.listdir(folder)
-                for item in key_folder_list:
-                    if ".bikey" not in item[-6:]:
-                        key_folder_list.remove
-                    else:
-                        folder = folder + item
-                        key_path = "{}/{}".format(A3_KEYS_DIR, item)
-                        if not os.path.exists(key_path):
-                            print("Trying to create Key Symlink for {}, key file is called {}".format(modname, item))
-                            os.symlink(folder, key_path)
-                        else:
-                            print("The key for {} already exists.".format(modname))
-            else:
-                print("\n ! The keys folder for {} doesn't exist. \n".format(modname))
 
-# Saves a file, syntax is savefile("The name of the file", "What you want to save into the file", "true = append to the file with a datetime, false = overwrite file.")
-def savefile(filename, filestring, log_true):
-    if log_true:
-        f = open( filename, 'a' )
-        f.write( "\n" + str(dt.datetime.now())[:-7] + " " + str(filestring))
-        f.close()
+def lowercase_mods():
+    """
+    Recursively set all directories and files in the ```WORKSHOP_DIR``` to lowercase
+
+    :return: True function successfully finishes.
+    """
+    if Path(WORKSHOP_DIR).is_dir():
+        for directory in Path(WORKSHOP_DIR).iterdir():
+            for item in directory.rglob('*'):
+                lowered_item = item.name.lower()
+                parent_path = item.parent
+                item.replace(parent_path / lowered_item)
+        return True
     else:
-        f = open( filename, 'w' )
-        f.write(str(filestring))
-        f.close()
-        
-def quick_Install():
-    print("I should probably finish this at some point")
+        print('UPDATE: No workshop folder detected.')
+        return False
 
-# Saves server starting param into launchparam.cfg, and logs server starting param into to launchparam.log.
-def save_starting_params():
-    starter = "./arma3server \"-name=" + server_name + "\" \"-config=" + server_cfg + "\" \"-mod="
-    modstring = ""
-    for mod_name, mod_id in MODS.items():
-        modstring = modstring + mod_name + ";"
-    modstring = modstring[:-1]
-    starter = starter + modstring + "\""
-    # Write the launch param to a file to be read by arma3server service. The file is called #launchparam.cfg
-    savefile("launchparam.cfg", starter, False)
-    # Write the launch param to a log to be stored for error checking.
-    savefile("launchparam.log", starter, True)
 
-def main():
-    log("Starting Mod-Manager")
-    handle_username()
-    handle_password()
-    if results.quick_install_true:
-        quickInstall()
-    handle_upgrade()
+def dependency_sort(mod_dict: dict):
+    """
+    Creates a mod= string by sorting the mods by dependency through a topological sort.
 
-    log("Getting mod URL's from mods.json")
-    handle_modlist()
+    :param mod_dict: The full mod dictionary.
+    :return: A string to be used for the mod= parameter
+    """
+    load_order = ''
+    dictionary = mod_dict
+    graph = nx.DiGraph()
+    for key, value in dictionary.items():
+        # Add mods to a directed graph. NetworkX will ignore nodes that are already made.
+        graph.add_node(value['param_name'])
+        for dependent in value['dependencies']:
+            # Add the mods dependencies and create directed edges.
+            graph.add_node(dependent['param_name'])
+            graph.add_edge(dependent['param_name'], value['param_name'])
+    load_order_list = list(nx.topological_sort(graph))
+    relative_mod_path = MODS_DIR.relative_to(SERVER_DIR)
+    # Capture relative path of ```MODS_DIR``` to ```SERVER_DIR``
+    for mod in load_order_list:
+        if mod is not load_order_list[0]:
+            load_order += ';'
+        load_order += str(relative_mod_path / mod)
+    return load_order
 
-    log("Trying to get mod info from URLs")
-    get_mod_url_info()
 
-    log("Updating mods")
-    update_mods()
+def write_start_up_script(load_order: str):
+    """
+    Updates or writes the start-up script for the server with the new mod parameter.
 
-    log("Converting uppercase files/folders to lowercase...")
-    lowercase_workshop_dir()
+    :param load_order: **str** The mod= string value.
+    :return: **bool** Whether the process succeeds or fails.
+    """
+    if Path(STARTUP_SCRIPT).is_file():
+        with open(STARTUP_SCRIPT, 'r') as read_script:
+            startup_parameters = read_script.read().split(' ')
+        if any(param.startswith('-mod=') for param in startup_parameters):
+            for index, param in enumerate(startup_parameters):
+                if param.startswith('-mod='):
+                    startup_parameters[index] = load_order
+        else:
+            if startup_parameters[-1].endswith('\n'):
+                startup_parameters[-1] = startup_parameters[-1][:-2]
+            startup_parameters.append(load_order)
+        with open(STARTUP_SCRIPT, 'w') as write_script:
+            for param in startup_parameters:
+                if param == startup_parameters[0]:
+                    write_script.write(param)
+                write_script.write(' ' + param)
+    else:
+        # Create new script and make it executable
+        with open(STARTUP_SCRIPT, 'w') as script:
+            script.write('#!/bin/sh\n\necho \"Starting server PRESS CTRL+C to exit\"\n./arma3server ' + load_order +
+                         '\n')
+        Path(STARTUP_SCRIPT).chmod(0o744)
 
-    log("Creating symlinks...")
-    create_mod_symlinks()
 
-    log("Symlinking Keys...")
-    symlink_mod_keys()
+def run_html_mod_update():
+    """
+    Carries out a mod-update process using an Arma 3 Mod List html as a source
 
-    log("Saving server starting param into launchparam.cfg, and logging to launchparam.log.")
-    save_starting_params()
-    log("Note, the mods may not be in the correct order. Mods load left to right.")
+    :return: **bool** Whether or not the function succeeds
+    """
+    print('CHECKING HTML: Scanning mod list for urls.')
+    launcher_html = mod_list_from_html(arguments.html_file)
+    if not launcher_html:
+        print('CHECKING HTML: There was an issue scanning the html, shutting down.')
+        return False
+    print('REQUEST: Assembling dictionary.')
+    mod_dictionary = mod_dictionary_builder(launcher_html)
+    if not mod_dictionary:
+        print('REQUEST ERROR: There was an issue assembling the dictionary, shutting down.')
+        return False
+    if not update_mods(mod_dictionary):
+        print('UPDATE ERROR: An issue arose trying to updating the mods, shutting down.')
+        return False
+    if not create_mod_symlinks(mod_dictionary):
+        print('MOD SYMLINKS ERROR: Something happened when creating mod symlinks, shutting down.')
+        return False
+    if not create_key_symlinks():
+        print('KEY SYMLINKS ERROR: Key symlinks could not properly be established, shutting down.')
+        return False
+    print('SORTING DEPENDENCIES: Sorting mods by dependency.')
+    mod_param = dependency_sort(mod_dictionary)
+    if not mod_param:
+        print('SORTING DEPENDENCIES ERROR: Either no mods were in the dictionary or dependencies could not be sorted')
+    else:
+        print(f'SORTING DEPENDENCIES: Printing out file in {Path.cwd()}')
+    print(f'START-UP SCRIPT: Updating/Creating start-up script at {STARTUP_SCRIPT}')
+    write_start_up_script(mod_param)
 
-main()
+
+if __name__ == '__main__':
+    if arguments.html_file:
+        run_html_mod_update()
+    else:
+        print('NO ARGUMENTS: No valid arguments passed.')
