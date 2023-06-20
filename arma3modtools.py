@@ -381,6 +381,7 @@ def write_start_up_script(load_order: str):
             script.write('#!/bin/sh\n\necho \"Starting server PRESS CTRL+C to exit\"\n./arma3server ' + load_order +
                          '\n')
         Path(STARTUP_SCRIPT).chmod(0o744)
+    return True
 
 
 def run_html_mod_update():
