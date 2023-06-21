@@ -55,6 +55,8 @@ parser.add_argument('-f', '--html-file', action='store', dest='html_file',
                     help='Update and install mods with an Arma 3 Launcher-made html mod list.')
 parser.add_argument('-v', '--validate', action='store_true', dest='validate_mods',
                     help='Validate existing mods in the workshop directory.')
+parser.add_argument('-k', '--key-symlinks', action='store_true', dest='validate_key_links',
+                    help='Clean up and create new keys based on mods in the workshop directory.')
 arguments = parser.parse_args()
 
 
@@ -325,7 +327,7 @@ def create_mod_symlinks(mod_dict: dict):
     return True
 
 
-def create_key_symlinks():
+def key_symlinks():
     """
     Creates symlinks from the key files in the workshop directory to the key files in the ```KEYS_DIR```
 
@@ -336,17 +338,13 @@ def create_key_symlinks():
         if not key.is_file():
             print(f'KEY SYMLINKS: Unlinking broken key: {key}')
             key.unlink()
-    for directory in Path(WORKSHOP_DIR).iterdir():
-        key_dir = directory / 'keys'
-        if key_dir.is_dir():
-            for file in key_dir.iterdir():
-                if file.suffix == '.bikey':
-                    symlink_key = Path(KEYS_DIR / file.name)
-                    if not symlink_key.is_file():
-                        print(f'KEY SYMLINKS: Creating symlink at: {symlink_key}')
-                        symlink_key.symlink_to(file)
-        else:
-            print(f'No key directory found in {directory}')
+    # Glob all bikey files in the ```WORKSHOP DIR```
+    bikey_files = Path(WORKSHOP_DIR).glob('*/*/*.bikey')
+    for key in bikey_files:
+        symlink_key = Path(KEYS_DIR / key.name)
+        if not symlink_key.is_file():
+            print(f'KEY SYMLINKS: Creating symlink at: {symlink_key}')
+            symlink_key.symlink_to(key)
     return True
 
 
@@ -451,7 +449,7 @@ def run_html_mod_update():
     if not create_mod_symlinks(mod_dictionary):
         print('MOD SYMLINKS ERROR: Something happened when creating mod symlinks, shutting down.')
         return False
-    if not create_key_symlinks():
+    if not key_symlinks():
         print('KEY SYMLINKS ERROR: Key symlinks could not properly be established, shutting down.')
         return False
     print('SORTING DEPENDENCIES: Sorting mods by dependency.')
@@ -482,5 +480,7 @@ if __name__ == '__main__':
         run_html_mod_update()
     elif arguments.validate_mods:
         validate_mods()
+    elif arguments.validate_key_links:
+        key_symlinks()
     else:
         print('NO ARGUMENTS: No valid arguments passed.')
