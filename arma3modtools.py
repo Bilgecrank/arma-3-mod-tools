@@ -45,7 +45,7 @@ SERVER_DIR = PurePath('/home/steam/servers/arma3')
 WORKSHOP_DIR = SERVER_DIR / 'steamapps/workshop/content' / WORKSHOP_ID  # Directory where workshop items are placed
 MODS_DIR = SERVER_DIR / 'mods'  # Directory mods will be referenced from to the game
 KEYS_DIR = SERVER_DIR / 'keys'  # Key directory for mods.
-STARTUP_SCRIPT = SERVER_DIR / 'start-server.sh' # The script for starting the server.
+PARAM_FILE = SERVER_DIR / 'mods.txt'  # The script for starting the server.
 
 parser = argparse.ArgumentParser(
     prog='arma3modtools',
@@ -395,35 +395,14 @@ def dependency_sort(mod_dict: dict):
 
 def write_start_up_script(load_order: str):
     """
-    Updates or writes the start-up script for the server with the new mod parameter.
+    Creates a txt file that can be linked to with the -mod parameter.
 
     :param load_order: **str** The mod= string value.
     :return: **bool** Whether the process succeeds or fails.
     """
     load_order = '-mod=\"' + load_order + '\"'
-    if Path(STARTUP_SCRIPT).is_file():
-        with open(STARTUP_SCRIPT, 'r') as read_script:
-            startup_parameters = read_script.read().split(' ')
-        if any(param.startswith('-mod=') for param in startup_parameters):
-            for index, param in enumerate(startup_parameters):
-                if param.startswith('-mod='):
-                    startup_parameters[index] = load_order
-        else:
-            if startup_parameters[-1].endswith('\n'):
-                startup_parameters[-1] = startup_parameters[-1][:-2]
-            startup_parameters.append(load_order)
-        with open(STARTUP_SCRIPT, 'w') as write_script:
-            for param in startup_parameters:
-                if param == startup_parameters[0]:
-                    write_script.write(param)
-                else:
-                    write_script.write(' ' + param)
-    else:
-        # Create new script and make it executable
-        with open(STARTUP_SCRIPT, 'w') as script:
-            script.write('#!/bin/sh\n\necho \"Starting server PRESS CTRL+C to exit\"\n./arma3server ' + load_order +
-                         '\n')
-        Path(STARTUP_SCRIPT).chmod(0o744)
+    with open(PARAM_FILE, 'w') as write_script:
+        write_script.write(load_order)
     return True
 
 
@@ -458,7 +437,7 @@ def run_html_mod_update():
         print('SORTING DEPENDENCIES ERROR: Either no mods were in the dictionary or dependencies could not be sorted')
     else:
         print(f'SORTING DEPENDENCIES: Printing out file in {Path.cwd()}')
-    print(f'START-UP SCRIPT: Updating/Creating start-up script at {STARTUP_SCRIPT}')
+    print(f'START-UP SCRIPT: Updating/Creating start-up script at {PARAM_FILE}')
     write_start_up_script(mod_param)
 
 
