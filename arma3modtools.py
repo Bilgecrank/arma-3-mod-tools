@@ -52,7 +52,9 @@ parser = argparse.ArgumentParser(
     description='Mod tools to install, update and maintain mods for Arma 3 on Linux.'
 )
 parser.add_argument('-f', '--html-file', action='store', dest='html_file',
-                    help='An Arma 3 Launcher-made html mod list.')
+                    help='Update and install mods with an Arma 3 Launcher-made html mod list.')
+parser.add_argument('-v', '--validate', action='store_true', dest='validate_mods',
+                    help='Validate existing mods in the workshop directory.')
 arguments = parser.parse_args()
 
 
@@ -214,6 +216,45 @@ def get_login():
     return credentials
 
 
+def check_installed_dirs(mod_list: list):
+    """
+    Checks the ```WORKSHOP_DIR``` to see if all mods successfully installed.
+
+    :param mod_list: The full mod dictionary
+    :return: A list of yet-to-be-installed mods, or an empty one if all mods installed.
+    """
+    print('UPDATE: Checking if all mods installed.')
+    to_install = mod_list
+    for installed_mod in Path(WORKSHOP_DIR).iterdir():
+        if installed_mod.name in to_install:
+            index = to_install.index(installed_mod.name)
+            to_install.pop(index)
+    return to_install
+
+
+def run_update(mod_list: list, validate: bool=False):
+    """
+    Runs an update cycle for steamcmd, requesting credentials for each batch of update files.
+
+    :param mod_list: **list** A list of key ids for mods on the workshop
+    :param validate: **bool** Whether or not to run validation.
+    """
+    login_string = get_login()
+    if not login_string:
+        # If get_login() fails.
+        print('EXIT: User/pass needed for mod downloads.')
+        return False
+    steamcmd_params = f' +login {login_string}' \
+                      f' +force_install_dir {SERVER_DIR}'
+    for mod in mod_list:
+        if not validate:
+            steamcmd_params += f' +workshop_download_item {WORKSHOP_ID} {mod}'
+        else:
+            steamcmd_params += f' +workshop_download_item {WORKSHOP_ID} {mod} validate'
+    steamcmd_params += ' +quit'
+    call_steamcmd(steamcmd_params)
+
+
 def update_mods(mod_dict: dict):
     """
     Updates the mods in the mod list dictated by the mod dictionary. The mod list is checked for up to date mods
@@ -225,11 +266,14 @@ def update_mods(mod_dict: dict):
     """
     mods_to_update = []
     mods_up_to_date = []
+    mods_to_validate = []
     for key, value in mod_dict.items():
         if needs_update(key):
             mods_to_update.append(key)
         else:
             mods_up_to_date.append(key)
+    for mod in mod_dict.keys():
+        mods_to_validate.append(mod)
     if len(mods_up_to_date) == len(mod_dict):
         print('UPDATE: All mods are up-to-date.')
         return True
@@ -239,17 +283,16 @@ def update_mods(mod_dict: dict):
             print(f'\t{mod_dict[installed_mod]["name"]}')
     if mods_to_update:
         print('UPDATE: Installing mods through SteamCMD.')
-        login_string = get_login()
-        if not login_string:
-            # If get_login() fails.
-            print('EXIT: User/pass needed for mod downloads.')
-            return False
-        steamcmd_params = f' +login {login_string}' \
-                          f' +force_install_dir {SERVER_DIR}'
-        for mod in mods_to_update:
-            steamcmd_params += f' +workshop_download_item {WORKSHOP_ID} {mod}'
-        steamcmd_params += ' +quit'
-        call_steamcmd(steamcmd_params)
+        run_update(mods_to_update)
+    while True:
+        not_installed_mods = check_installed_dirs(mods_to_update)
+        if not_installed_mods:
+            print('UPDATE: Not all mods installed, trying again.')
+            run_update(mods_to_update)
+        else:
+            break
+    print('UPDATE: Validating mods')
+    run_update(mods_to_validate, validate=True)
     print('UPDATE: Mod updates finished.')
     print('UPDATE: Converting file and directory names to lowercase.')
     if not lowercase_mods():
@@ -359,6 +402,7 @@ def write_start_up_script(load_order: str):
     :param load_order: **str** The mod= string value.
     :return: **bool** Whether the process succeeds or fails.
     """
+    load_order = '-mod=\"' + load_order + '\"'
     if Path(STARTUP_SCRIPT).is_file():
         with open(STARTUP_SCRIPT, 'r') as read_script:
             startup_parameters = read_script.read().split(' ')
@@ -374,7 +418,8 @@ def write_start_up_script(load_order: str):
             for param in startup_parameters:
                 if param == startup_parameters[0]:
                     write_script.write(param)
-                write_script.write(' ' + param)
+                else:
+                    write_script.write(' ' + param)
     else:
         # Create new script and make it executable
         with open(STARTUP_SCRIPT, 'w') as script:
@@ -419,8 +464,23 @@ def run_html_mod_update():
     write_start_up_script(mod_param)
 
 
+def validate_mods():
+    """
+    Validates mods in the ```WORKSHOP_DIR``` by calling workshop_download_mod validate on each mod installed.
+    :return:
+    """
+    workshop_mods = []
+    for installed_mod in Path(WORKSHOP_DIR).iterdir():
+        workshop_mods.append(installed_mod.name)
+    print(f'VALIDATE: Validating {len(workshop_mods)} workshop mods.')
+    run_update(workshop_mods, True)
+    print('VALIDATE: Validation concluded.')
+
+
 if __name__ == '__main__':
     if arguments.html_file:
         run_html_mod_update()
+    elif arguments.validate_mods:
+        validate_mods()
     else:
         print('NO ARGUMENTS: No valid arguments passed.')
