@@ -1,29 +1,3 @@
-#!/usr/bin/python3
-
-# MIT License
-#
-# Copyright (c) 2017 Marcel de Vries
-# Modified by EggyPapa - https://github.com/EggyPapa
-# Copyright (c) 2023 Bilgecrank
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
 import re  # for sanitizing mod_names
 from pathlib import Path, PurePath  # for file-handling operations
 from datetime import datetime  # for comparing timestamps for mod updates
@@ -269,13 +243,17 @@ def update_mods(mod_dict: dict):
     mods_to_update = []
     mods_up_to_date = []
     mods_to_validate = []
+    mod_num = 1
     for key, value in mod_dict.items():
+        print(f'\rUPDATE: Checking {mod_num}/{len(mod_dict.items())} mods for updates.', end='', flush=True)
         if needs_update(key):
             mods_to_update.append(key)
         else:
             mods_up_to_date.append(key)
+        mod_num += 1;
     for mod in mod_dict.keys():
         mods_to_validate.append(mod)
+    print('\n')
     if len(mods_up_to_date) == len(mod_dict):
         print('UPDATE: All mods are up-to-date.')
         return True
@@ -451,6 +429,10 @@ def validate_mods():
         workshop_mods.append(installed_mod.name)
     print(f'VALIDATE: Validating {len(workshop_mods)} workshop mods.')
     run_update(workshop_mods, True)
+    print(f'VALIDATE: Converting file and directory names to lowercase.')
+    if not lowercase_mods():
+        print('UPDATE: Could not successfully lowercase all/any mods.')
+        return False
     print('VALIDATE: Validation concluded.')
 
 
